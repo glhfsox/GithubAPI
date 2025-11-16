@@ -191,6 +191,7 @@ class Request :
 
         
         cache_path = self.get_cache_path()
+        temp_path = cache_path.with_suffix('.tmp')
         try:
             cache_data = { 
              'timestamp': datetime.now().isoformat(),
@@ -206,15 +207,15 @@ class Request :
     }
             cache_data = convert_to_json_serializable(cache_data)
         
-        
-            temp_path = cache_path.with_suffix('.tmp')
+         #ensuring that file is written completely (in case with no mistakes) 
+         # , or not at all in case of a mistake 
             with open(temp_path , 'w') as f:
                 json.dump(cache_data , f)
             temp_path.replace(cache_path)
         except Exception as e: 
             print(f"Error saving cache : {e}")
-            if 'temp_path' in locals() and temp_path.exists():
-                temp_path.unlink()
+            if  temp_path.exists():
+                 temp_path.unlink()
 
 
 class Response : 
