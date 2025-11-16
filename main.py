@@ -30,7 +30,25 @@ class GithubEvent:
         else:
             self.created_at = datetime.min
         self.actor = event_data.get("actor" , {}).get("login")
-        self.payload = event_data.get("payload" , {})
+        self.payload = event_data.get("payload" ) or {}
+        #trying to fix mistakes with commits count
+        commits_list = self.payload.get("commits")
+        if self.type == EventType.PUSH.value:
+            try:
+              count = int(self.payload.get("size", 0) or 1)
+              if count <= 0 and isinstance(commits_list, list):
+                  count = len(commits_list)
+            except (ValueError, TypeError):
+                  count = len(commits_list) if isinstance(commits_list, list) else 0
+        else:
+            if isinstance(commits_list, list) and commits_list:
+                try:
+                    count = sum(1 for c in commits_list if c.get("distinct", True))
+                except Exception:
+                    count = 0
+            else:
+                count = 0
+        self.commit_count = max(count, 0)
     def format_date(self) -> str:
         if self.created_at == datetime.min:
             return "Unknown date"
@@ -38,8 +56,8 @@ class GithubEvent:
     def format(self) -> str:
         #initializing every possible input data "type"
         if self.type == EventType.PUSH.value: 
-          commits = self.payload.get("size" , 0 )
-          return f"Pushed {commits} to {self.repo_name}"
+            count = getattr(self , "commit_count" , 0)
+            return f"Pushed {count} commit{'s' if count!=1 else ''} to {self.repo_name}"
         elif self.type == EventType.ISSUES.value:
             action = self.payload.get("action", "").capitalize()
             return f"{action} an issue in {self.repo_name}"
