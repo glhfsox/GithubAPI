@@ -1,10 +1,15 @@
+from functools import cache
+from pickle import TRUE
+from re import T
+from tempfile import TemporaryDirectory
+from token import OP
 import urllib.request
 import urllib.error
 import json
 from enum import Enum
-from typing import List , Optional
-from datetime import datetime
-
+from typing import List , Optional, Dict, Tuple
+from datetime import date, datetime, timedelta
+from pathlib import Path
 
 
 class EventType(Enum):
@@ -35,7 +40,7 @@ class GithubEvent:
         commits_list = self.payload.get("commits")
         if self.type == EventType.PUSH.value:
             try:
-              count = int(self.payload.get("size", 0) or 1)
+              count = int(self.payload.get("size", 1) or 0)
               if count <= 0 and isinstance(commits_list, list):
                   count = len(commits_list)
             except (ValueError, TypeError):
@@ -96,12 +101,33 @@ class SortByType(SortStrat):
 class Request :
     #reading info from given url and handling some errors 
     BASE_URL = "https://api.github.com/users"
+    #setting up caching and time-to-live(TTL) to improve performance
+    memory_cache: Dict[str , Tuple[List[GithubEvent] , datetime]] = {}
+    CACHE_DIR = Path(".cache")
+    TTL = timedelta(minutes=10)
     def __init__(self , username : str , sort_strategy: Optional[SortStrat] = None):
         self.username = username
         self.url = f"{self.BASE_URL}/{username}/events"
         self.sortStrategy = sort_strategy or SortByDate()
         self.events: List[GithubEvent] = []
+        self.CACHE_DIR.mkdir(exist_ok=True)
+
+
+    
     def fetch(self) -> bool:
+        cache_key = self.username
+       #checking if the program has already fetched users' info during TTL
+        if cache_key in self.memory_cache:
+            events , cache_time = self.memory_cache[cache_key]
+            if datetime.now() - cache_time < self.TTL:
+                self.events = events
+                return True
+        file_cache = self.load_from_file_cache()
+        #overwriting cache 
+        if file_cache:
+            self.events = file_cache
+            self.memory_cache [cache_key] = (file_cache , datetime.now())
+            return True 
         try:
             response = urllib.request.urlopen(self.url)
             data = json.loads(response.read().decode())
@@ -111,6 +137,9 @@ class Request :
                 return False
             
             self.events = [GithubEvent(event_data) for event_data in data ]
+            #saving new data for the user
+            self.memory_cache[cache_key] = (self.events , datetime.now())
+            self.save_to_file_cache(self.events)
             return True
         except urllib.error.HTTPError as e:
             if e.code == 404:
@@ -125,6 +154,67 @@ class Request :
         self.sortStrategy = strat
     def get_sorted_events(self) -> List[GithubEvent]:
         return self.sortStrategy.sort(self.events)
+
+    def get_cache_path(self) -> Path:
+        return self.CACHE_DIR/f"{self.username}.json"
+
+    def load_from_file_cache(self) -> Optional[List[GithubEvent]]:
+        cache_path = self.get_cache_path()
+        if not cache_path.exists():
+            return None
+        try:
+            with open(cache_path , 'r') as f:
+                cache_data = json.load(f)
+                cache_time = datetime.fromisoformat(cache_data['timestamp'])
+
+                if datetime.now() - cache_time < self.TTL:
+                    return [GithubEvent(event) for event in cache_data['events']]
+        except Exception:
+            pass #бляяя , лан похуй
+        return None
+
+    def save_to_file_cache(self , events: List[GithubEvent] ) -> None:
+        #rrecursively transforms data types into json-compatible
+        def convert_to_json_serializable(obj):
+            if isinstance(obj, set):
+                return list(obj)
+            elif isinstance(obj, dict):
+                return {k: convert_to_json_serializable(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_to_json_serializable(item) for item in obj]
+            elif obj is None:
+                return None
+            elif isinstance(obj, (str, int, float, bool)):
+                return obj
+            else:
+                return str(obj)
+
+        
+        cache_path = self.get_cache_path()
+        try:
+            cache_data = { 
+             'timestamp': datetime.now().isoformat(),
+             'events': [
+                {
+                'type': e.type,
+                'repo': {'name' : e.repo_name},
+                'actor': {'login' : e.actor},
+                'created_at' : e.created_at.isoformat(),
+                'payload' : convert_to_json_serializable(e.payload)
+            }for e in events 
+        ]
+    }
+            cache_data = convert_to_json_serializable(cache_data)
+        
+        
+            temp_path = cache_path.with_suffix('.tmp')
+            with open(temp_path , 'w') as f:
+                json.dump(cache_data , f)
+            temp_path.replace(cache_path)
+        except Exception as e: 
+            print(f"Error saving cache : {e}")
+            if 'temp_path' in locals() and temp_path.exists():
+                temp_path.unlink()
 
 
 class Response : 
