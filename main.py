@@ -6,10 +6,8 @@ from typing import List , Optional, Dict, Tuple
 from datetime import datetime, timedelta
 from pathlib import Path
 from collections import Counter
-
 import tkinter as tk
 from tkinter import ttk, messagebox
-
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
@@ -225,33 +223,21 @@ class Request :
                  temp_path.unlink()
 
 
-class Response : 
-    def __init__(self , request : Request):
-        self.request = request
-
-        #basically displaying n (in our case 10) last events of given user
-    def display(self , limit : int = 10 ) -> None:
-        events = self.request.get_sorted_events()
-
-        print(f"\n{'='*60}")
-        print(f"Activity of the following user : {self.request.username}")
-        print(f"\n{'='*60}")
-
-        for i , event in enumerate(events[:limit] , 1):
-            print(f"{i} . {event.format() } - {event.format_date()}")
-        
-        if len(events) > limit:
-            print(f"\n.. and {len(events) - limit} more events")
-
 STATS_DAYS = 30
+UI_SORT_OPTIONS = [
+    ("By Date (newest first)", SortByDate),
+    ("By Repository", SortByRepository),
+    ("By Event Type", SortByType),
+]
+
+
+def filter_recent_events(events: List[GithubEvent], days: int) -> List[GithubEvent]:
+    cutoff = datetime.now() - timedelta(days=days)
+    return [e for e in events if e.created_at != datetime.min and e.created_at >= cutoff]
 
 
 def aggregate_stats(events: List[GithubEvent], days: int) -> Optional[Dict[str, int]]:
-    if not events:
-        return None
-
-    cutoff = datetime.now() - timedelta(days=days)
-    recent_events = [e for e in events if e.created_at != datetime.min and e.created_at >= cutoff]
+    recent_events = filter_recent_events(events, days)
 
     if not recent_events:
         return None
@@ -283,8 +269,11 @@ def build_figure_from_stats(stats: Dict[str, int]) -> Figure:
     labels = list(stats.keys())
     values = list(stats.values())
 
-    fig = Figure(figsize=(20, 10), dpi=100, facecolor="#fafafa", constrained_layout=True)
-    ax_pie, ax_bar = fig.subplots(1, 2)
+    fig = Figure(figsize=(14, 7), dpi=100, facecolor="#fafafa")
+    ax_pie, ax_bar = fig.subplots(
+        1, 2, gridspec_kw={"width_ratios": [1.1, 1]}, squeeze=True
+    )
+    fig.subplots_adjust(left=0.05, right=0.98, top=0.9, bottom=0.12, wspace=0.35)
 
     total = sum(values)
     if total == 0:
@@ -293,12 +282,15 @@ def build_figure_from_stats(stats: Dict[str, int]) -> Figure:
     colors = ["#1f77b4", "#f28e2b", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2"]
 
     ax_pie.pie(values, labels=labels, autopct="%1.1f%%", startangle=140, colors=colors)
+    ax_pie.set_box_aspect(1)
     ax_pie.set_title("Action share")
 
-    ax_bar.bar(labels, values, color=colors[: len(labels)])
+    x_pos = list(range(len(labels)))
+    ax_bar.bar(x_pos, values, color=colors[: len(labels)])
+    ax_bar.set_xticks(x_pos)
+    ax_bar.set_xticklabels(labels, rotation=30, ha="right")
     ax_bar.set_title("Action count")
     ax_bar.set_ylabel("Count")
-    ax_bar.tick_params(axis="x", rotation=30)
     ax_bar.grid(axis="y", linestyle="--", alpha=0.4)
 
     fig.text(
@@ -338,8 +330,9 @@ def parse_username(value: str) -> str:
     return value
 
 
-def show_stats_window(root: tk.Tk, request: Request) -> None:
+def show_stats_window(root: tk.Tk, request: Request, sort_label: str) -> None:
     events = request.get_sorted_events()
+    recent_events = filter_recent_events(events, STATS_DAYS)
     stats = aggregate_stats(events, STATS_DAYS)
 
     win = tk.Toplevel(root)
@@ -348,53 +341,130 @@ def show_stats_window(root: tk.Tk, request: Request) -> None:
     win.geometry(f"{width}x{height}")
     center_window(win, width, height)
 
+    # layout: header (row 0), charts (row 1), events list (row 2)
+    win.rowconfigure(0, weight=0)
+    win.rowconfigure(1, weight=3)
+    win.rowconfigure(2, weight=2)
+    win.columnconfigure(0, weight=1)
+
     info_frame = ttk.Frame(win, padding=(12, 10))
-    info_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
+    info_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
+    info_frame.columnconfigure(0, weight=1)
 
     ttk.Label(
         info_frame,
         text=f"User: {request.username} | Period: last {STATS_DAYS} days",
         font=("TkDefaultFont", 12, "bold"),
-    ).pack(side=tk.LEFT, anchor="w")
+    ).grid(row=0, column=0, sticky="w")
 
     if not stats:
         ttk.Label(
             win,
             text="No activity for the selected period.",
             foreground="red",
-        ).pack(pady=20)
+        ).grid(row=1, column=0, pady=20)
         return
 
+    chart_frame = ttk.Frame(win)
+    chart_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 6))
+    chart_frame.rowconfigure(0, weight=1)
+    chart_frame.columnconfigure(0, weight=1)
+
     fig = build_figure_from_stats(stats)
-    canvas_frame = ttk.Frame(win)
-    canvas_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 12))
+    fig_canvas = FigureCanvasTkAgg(fig, master=chart_frame)
+    fig_widget = fig_canvas.get_tk_widget()
+    fig_widget.configure(bg="#fafafa", highlightthickness=0)
+    fig_widget.grid(row=0, column=0, sticky="nsew")
 
-    canvas = FigureCanvasTkAgg(fig, master=canvas_frame)
-    canvas_widget = canvas.get_tk_widget()
-    canvas_widget.configure(bg="#fafafa", highlightthickness=0)
-    canvas_widget.pack(fill=tk.BOTH, expand=True)
-
-    def resize_figure():
-        w = max(canvas_widget.winfo_width(), 200)
-        h = max(canvas_widget.winfo_height(), 200)
-        dpi = fig.get_dpi()
-        fig.set_size_inches(w / dpi, h / dpi, forward=True)
-        fig.tight_layout()
-        canvas.draw()
-
-    def on_resize(event):
+    def on_chart_resize(event):
         if event.width <= 0 or event.height <= 0:
             return
-        resize_figure()
+        dpi = fig.get_dpi()
+        w = max(event.width, 200)
+        h = max(event.height, 200)
+        fig.set_size_inches(w / dpi, h / dpi, forward=True)
+        fig_canvas.draw_idle()
 
-    canvas_widget.bind("<Configure>", on_resize)
-    win.after_idle(resize_figure)
+    chart_frame.bind("<Configure>", on_chart_resize)
+
+    list_frame = ttk.Frame(win, padding=(12, 8))
+    list_frame.grid(row=2, column=0, sticky="nsew", padx=4, pady=(0, 12))
+    list_frame.rowconfigure(1, weight=1)
+    list_frame.columnconfigure(0, weight=1)
+
+    style = ttk.Style(win)
+    style.configure("Activity.Time.TLabel", font=("TkDefaultFont", 10, "bold"))
+    style.configure("Activity.Event.TLabel", font=("TkDefaultFont", 10))
+
+    ttk.Label(
+        list_frame,
+        text=f"Recent events (sorted: {sort_label})",
+        font=("TkDefaultFont", 11, "bold"),
+    ).grid(row=0, column=0, sticky="w", pady=(0, 6))
+
+    list_canvas = tk.Canvas(list_frame, highlightthickness=0, bg="#ffffff")
+    yscroll = ttk.Scrollbar(list_frame, orient="vertical", command=list_canvas.yview)
+    list_canvas.configure(yscrollcommand=yscroll.set)
+
+    list_canvas.grid(row=1, column=0, sticky="nsew")
+    yscroll.grid(row=1, column=1, sticky="ns")
+
+    inner = ttk.Frame(list_canvas, padding=4)
+    inner_window = list_canvas.create_window((0, 0), window=inner, anchor="nw")
+
+    def on_inner_config(event):
+        list_canvas.configure(scrollregion=list_canvas.bbox("all"))
+        canvas_width = list_canvas.winfo_width()
+        if canvas_width > 0:
+            list_canvas.itemconfig(inner_window, width=canvas_width)
+
+    inner.bind("<Configure>", on_inner_config)
+    list_canvas.update_idletasks()
+
+    def on_mousewheel(event):
+        if event.num == 4:
+            delta = -1
+        elif event.num == 5:
+            delta = 1
+        else:
+            delta = -1 if event.delta > 0 else 1
+        list_canvas.yview_scroll(delta, "units")
+        return "break"
+
+    for widget in (list_canvas, inner, win):
+        widget.bind("<MouseWheel>", on_mousewheel, add="+")
+        widget.bind("<Button-4>", on_mousewheel, add="+")
+        widget.bind("<Button-5>", on_mousewheel, add="+")
+
+    display_events = recent_events or events
+    for idx, event in enumerate(display_events[:25]):
+        row = ttk.Frame(inner, padding=(10, 6))
+        row.pack(fill=tk.X, pady=(0, 6))
+
+        time_label = ttk.Label(
+            row,
+            text=event.format_date(),
+            style="Activity.Time.TLabel",
+            width=22,
+            anchor="w",
+        )
+        time_label.pack(side=tk.LEFT, anchor="w")
+
+        event_label = ttk.Label(
+            row,
+            text=event.format(),
+            style="Activity.Event.TLabel",
+            anchor="w",
+            wraplength=900,
+            justify="left",
+        )
+        event_label.pack(side=tk.LEFT, anchor="w", fill=tk.X, expand=True, padx=(10, 0))
 
 
 def run_ui() -> None:
     root = tk.Tk()
     root.title("Github Activity")
-    width, height = 720, 240
+    width, height = 720, 480
     root.geometry(f"{width}x{height}")
     center_window(root, width, height)
 
@@ -425,6 +495,16 @@ def run_ui() -> None:
     entry.pack(fill=tk.X, pady=5)
     entry.focus_set()
 
+    ttk.Label(main_frame, text="Sorting:").pack(anchor="w", pady=(6, 0))
+    sort_var = tk.StringVar(value=UI_SORT_OPTIONS[0][0])
+    sort_box = ttk.Combobox(
+        main_frame,
+        textvariable=sort_var,
+        values=[label for label, _ in UI_SORT_OPTIONS],
+        state="readonly",
+    )
+    sort_box.pack(fill=tk.X, pady=4)
+
     def on_show():
         raw_value = username_var.get()
         username = parse_username(raw_value)
@@ -433,11 +513,17 @@ def run_ui() -> None:
             return
 
         req = Request(username)
+        selected_label = sort_var.get()
+        for label, strat_cls in UI_SORT_OPTIONS:
+            if label == selected_label:
+                req.set_sort_strategy(strat_cls())
+                break
+
         if not req.fetch():
             messagebox.showerror("Error", f"Failed to load data for '{username}'.")
             return
 
-        show_stats_window(root, req)
+        show_stats_window(root, req, selected_label)
 
     btn = ttk.Button(main_frame, text="Show stats", command=on_show)
     btn.pack(pady=10)
@@ -447,36 +533,6 @@ def run_ui() -> None:
 
     root.mainloop()
 
-
-def main(): 
-    username = input("Please enter a valid username: ").strip()
-    if not username:
-        print("Not a valid username")
-        return
-    
-
-    request = Request(username)
-    if not request.fetch():
-        return "fetch failure"
-    
-    print("\nSorting options:")
-    print("1. By Date (newest first)")
-    print("2. By Repository")
-    print("3. By Event Type")
-
-    choice = input("\nSelect sorting (1-3): ").strip()
-
-    strategies = {
-        '1' : SortByDate(),
-        '2' : SortByRepository(),
-        '3' : SortByType()
-    }
-
-    if choice in strategies:
-        request.set_sort_strategy(strategies[choice])
-
-    response = Response(request)
-    response.display(limit=15)
 
 if __name__ == "__main__" :
     run_ui()
